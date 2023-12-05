@@ -1,0 +1,170 @@
+---
+title: "An intro to tidymodels"
+author: "Jason"
+date: "2023-11-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+library(tidyverse)
+library(here)
+library(tidymodels)
+library(ranger)
+
+```
+
+# basic model selection with cross validation on a regression task
+
+```{r load data and quick viz}
+data(diamonds)
+head(diamonds)
+
+ggplot(data = diamonds, aes(x=carat,y=price,color=color,shape=cut)) +
+  geom_point() +
+  theme_minimal()
+
+
+```
+```{r manual cross validation}
+set.seed(42)
+
+diamonds_10fold <- diamonds %>%
+  mutate(fold = rep(1:10,length.out=n()),
+         fold = sample(fold, size = n(), replace=FALSE))
+
+diamonds_validate <- diamonds_10fold %>%
+  filter(fold == 1)
+
+diamonds_train <- diamonds_10fold %>%
+  filter(fold != 1)
+
+### train on training partition
+mdl1 <- lm(price ~ carat + cut + color, data = diamonds_train)
+mdl2 <- lm(price ~ carat + color + clarity, data = diamonds_train)
+mdl3 <- lm(price ~ carat + cut + color + clarity, data = diamonds_train)
+
+### test/validate on validation partition
+test_df <- diamonds_validate %>%
+  mutate(pred1 = predict(mdl1,diamonds_validate),
+         pred2 = predict(mdl2, .),
+         pred3 = predict(mdl3, .)) %>%
+  mutate(resid1 = pred1 - price,
+         resid2 = pred2 - price,
+         resid3 = pred3 - price)
+
+
+## writea fucntion
+calc_rmse <- function(x) {
+  # x is a vector of residuals from our pred model
+  sq_error <- x^2
+  mean_sq_error <- mean(sq_error)
+  rt_mean_sq_error <- sqrt(mean_sq_error)
+  
+  return(rt_mean_sq_error)
+}
+  
+
+# compare test results
+calc_rmse(test_df$resid1)
+calc_rmse(test_df$resid2)
+calc_rmse(test_df$resid3)
+
+```
+
+# Tidymodels with a classifier task
+
+```{r}
+
+t_df <- read_csv(here('data\\titanic_survival.csv'))
+
+
+surv_df <- t_df %>%
+  mutate(survived = factor(survived),
+         pclass = factor(pclass)) %>%
+  select(-cabin,-ticket)
+
+
+ggplot(surv_df,aes (x= pclass,fill= survived)) +
+  geom_bar()
+
+
+ggplot(surv_df,aes(x= age, fill = survived)) +
+  geom_histogram()
+
+```
+
+## Using `tidymodels`
+
+#### split the data
+
+```{r}
+
+surv_df %>%
+  group_by(survived) %>%
+  summarize(n = n()) %>%
+  ungroup() %>%
+  mutate(prop = n / sum(n))
+
+set.seed(123)
+
+surv_split <- initial_split(surv_df, prop = 0.8, strata = survived)
+
+surv_train_df <- training(surv_split)
+surv_test_df <- testing(surv_split)
+
+```
+
+## `tidymodels` basic model with `parsnip`
+
+```{r}
+
+blr_model <- logistic_reg() %>% # can use other models like random forest
+  set_engine('glm')
+
+
+blr_fit <- blr_model %>%
+  fit(survived ~ sex + pclass, data = surv_train_df)
+
+
+### create a poor predictor
+garb_fit <- blr_model %>%
+  fit(survived ~ passenger_id + embarked, data = surv_train_df)
+
+
+````
+
+```{r}
+
+surv_test_predict <- surv_test_df %>%
+  mutate(predict(blr_fit, new_data = surv_test_df)) %>%
+  mutate(predict(blr_fit, new_data = .,type='prob'))
+
+# create confusion matrix
+table(surv_test_predict %>% select(survived,.pred_class))
+
+accuracy(surv_test_predict, truth = survived, estimate = .pred_class)
+
+```
+
+```{r}
+
+roc_df <- roc_curve(surv_test_predict, truth = survived, .pred_0)
+
+autoplot(roc_df)
+
+garb_test_df <- surv_test_df %>%
+  mutate(predict(garb_fit, new_data = .,type = "prob"))
+
+garb_roc_df <- garb_test_df %>%
+  roc_curve(truth = survived,.pred_0)
+
+autoplot(garb_roc_df)
+
+
+roc_auc(surv_test_predict, truth = survived, .pred_0)
+roc_auc(garb_test_df, truth = survived, .pred_0)
+
+````
